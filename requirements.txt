@@ -1,0 +1,5 @@
+# Python deps for the AI analyzer (ai_agent/) used in the Jenkins CI "AI Code Analysis" stage
+# Providers are tried in order: Groq (primary) → Gemini (fallback) → Ollama (local, no install)
+groq>=0.11.0
+google-genai
+requests==2.32.3

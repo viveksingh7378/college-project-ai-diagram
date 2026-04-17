@@ -1,0 +1,28 @@
+# Optional: use Ingress instead of LoadBalancer for the client service.
+# Requires an ingress controller (nginx-ingress, traefik, etc.) in the cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-diagram-ingress
+  namespace: ai-diagram
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: server
+                port:
+                  number: 5000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: client
+                port:
+                  number: 80
