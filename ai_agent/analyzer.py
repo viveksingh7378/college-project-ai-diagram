@@ -37,10 +37,17 @@ SKIP_FILES = {
 }
 ANALYZE_EXTS = {".py", ".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".css", ".json"}
 
-# Max chars sent to AI per chunk — keep below Gemini's context limit
-MAX_CHUNK_CHARS = 80000
+# Max chars per SINGLE file chunk — must stay well under Groq's per-request
+# token budget once all other overhead (system prompt, schema, etc.) is added.
+# With the old 80 000 value, a full repo scan blew past Groq's max-request size
+# and we'd get "400 — Please reduce the length of the messages or completion."
+MAX_CHUNK_CHARS = 20000
 # If a file exceeds this, split it into overlapping chunks so no line is missed
 CHUNK_OVERLAP = 2000  # overlap between chunks to catch errors at split boundaries
+# Max total chars per BATCH sent to the AI (multiple small files packed together).
+# Keeping the batch below ~25 KB means the full prompt (files + system + schema)
+# stays well under the typical 8 K-output-token budget Groq allows per request.
+MAX_BATCH_CHARS = 25000
 
 
 # ── Collect source files (with chunking for large files) ─────────
@@ -283,14 +290,17 @@ def call_groq_analyze(prompt):
 
     client = Groq(api_key=api_key)
 
-    # Ordered by quality for code-analysis tasks. All support JSON mode.
-    # If one is decommissioned, the next in the list is tried.
+    # Ordered by quality for code-analysis tasks. All currently live on Groq
+    # (as of late 2025) and support JSON mode. Removed models:
+    #   - llama-3.1-70b-versatile         → decommissioned, returns 404
+    #   - mixtral-8x7b-32768              → decommissioned, returns 404
+    #   - deepseek-r1-distill-llama-70b   → returns 404
     models = [
-        "llama-3.3-70b-versatile",   # best general-purpose, strong at code
-        "llama-3.1-70b-versatile",   # fallback if 3.3 is decommissioned
-        "llama-3.1-8b-instant",      # fast small model, last resort
-        "mixtral-8x7b-32768",        # large context, good for big prompts
-        "deepseek-r1-distill-llama-70b",  # code-focused reasoner
+        "llama-3.3-70b-versatile",   # best general-purpose, strong at code (128K ctx)
+        "llama-3.1-8b-instant",      # fast small model, last resort (128K ctx)
+        "llama3-70b-8192",           # stable older-gen fallback (8K ctx)
+        "llama3-8b-8192",            # tiny stable fallback (8K ctx)
+        "gemma2-9b-it",              # extra fallback
     ]
 
     # JSON mode requires the word "JSON" somewhere in the prompt — our
@@ -1448,6 +1458,110 @@ def validate_html_fix(rel_path):
     return True, "OK"
 
 
+def extract_json(text):
+    """Strip markdown fences and extract the outermost {...} JSON object."""
+    import re
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = text.replace("```", "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def run_ai_batched(files_dict, providers):
+    """
+    Split files into size-bounded batches and call the AI providers once per
+    batch. This replaces the old "send every file in one huge prompt" path
+    which blew past Groq's per-request token budget and caused:
+        400 — Please reduce the length of the messages or completion.
+
+    providers is a list of (name, fn) tuples tried in order for each batch.
+    Each fn(prompt) returns the raw response text, or None on failure.
+
+    Returns a single merged analysis dict with all issues from all batches.
+    """
+    # 1. Pack files into batches no bigger than MAX_BATCH_CHARS
+    batches = []
+    current = {}
+    current_chars = 0
+    for label, meta in files_dict.items():
+        size = len(meta["content"])
+        # If a single chunk is already bigger than the batch limit, give it
+        # its own batch (it still has to fit under the provider's hard limit,
+        # but that's the chunker's job, not ours).
+        if size >= MAX_BATCH_CHARS:
+            if current:
+                batches.append(current)
+                current = {}
+                current_chars = 0
+            batches.append({label: meta})
+            continue
+        if current and current_chars + size > MAX_BATCH_CHARS:
+            batches.append(current)
+            current = {}
+            current_chars = 0
+        current[label] = meta
+        current_chars += size
+    if current:
+        batches.append(current)
+
+    print(f"  Packed {len(files_dict)} chunk(s) into {len(batches)} batch(es) "
+          f"(max {MAX_BATCH_CHARS} chars each)")
+
+    # 2. Call each provider per batch; collect all issues
+    all_issues = []
+    summaries = []
+    any_batch_succeeded = False
+
+    for i, batch in enumerate(batches, 1):
+        batch_labels = ", ".join(batch.keys())
+        batch_chars = sum(len(m["content"]) for m in batch.values())
+        print(f"\n  ── Batch {i}/{len(batches)} "
+              f"({len(batch)} file(s), {batch_chars} chars) ──")
+        prompt = build_prompt(batch)
+
+        raw = None
+        for name, fn in providers:
+            print(f"  Trying {name}...")
+            raw = fn(prompt)
+            if raw:
+                break
+
+        if not raw:
+            print(f"  ⚠ Batch {i} — all providers failed; skipping this batch")
+            continue
+
+        analysis = extract_json(raw)
+        if not analysis:
+            print(f"  ⚠ Batch {i} — response wasn't valid JSON; skipping")
+            continue
+
+        any_batch_succeeded = True
+        batch_issues = analysis.get("issues", []) or []
+        all_issues.extend(batch_issues)
+        if analysis.get("summary"):
+            summaries.append(analysis["summary"])
+        print(f"  ✓ Batch {i} — {len(batch_issues)} issue(s) found")
+
+    if not any_batch_succeeded:
+        return None
+
+    return {
+        "status": "issues_found" if all_issues else "clean",
+        "summary": " | ".join(summaries) if summaries
+                    else f"No issues found across {len(batches)} batch(es)",
+        "issues": all_issues,
+    }
+
+
 def main():
     print("=" * 60)
     print("AI Code Analyzer — Powered by Google Gemini")
@@ -1468,33 +1582,33 @@ def main():
             seen_files.add(rp)
     print(f"  Total: {len(seen_files)} file(s), {len(files)} chunk(s) sent to AI")
 
-    # Step 2: build prompt and call the AI provider
+    # Step 2: build batched prompts and call the AI provider(s)
     # Provider order: Groq (JSON mode → no syntax errors) → Gemini → Ollama.
     # AI_PROVIDER env var can force a specific provider for testing.
-    prompt = build_prompt(files)
     provider_override = os.environ.get("AI_PROVIDER", "").lower().strip()
-    raw = None
 
-    def _try(name, fn):
-        print(f"\nStep 2: Sending all files to {name} for analysis...")
-        return fn(prompt)
-
+    # Build the (name, fn) list in the order we'll try them PER BATCH.
     if provider_override == "groq":
-        raw = _try("Groq", call_groq_analyze)
+        providers = [("Groq", call_groq_analyze)]
     elif provider_override == "gemini":
-        raw = _try("Gemini", call_gemini_analyze)
+        providers = [("Gemini", call_gemini_analyze)]
     elif provider_override == "ollama":
-        raw = _try("Ollama", call_ollama_analyze)
+        providers = [("Ollama", call_ollama_analyze)]
     else:
-        # Auto mode: Groq → Gemini → Ollama (Gemini already falls to Ollama internally)
+        providers = []
         if os.environ.get("GROQ_API_KEY"):
-            raw = _try("Groq", call_groq_analyze)
-        if not raw and os.environ.get("GEMINI_API_KEY"):
-            raw = _try("Gemini", call_gemini_analyze)
-        if not raw:
-            raw = _try("Ollama", call_ollama_analyze)
+            providers.append(("Groq", call_groq_analyze))
+        if os.environ.get("GEMINI_API_KEY"):
+            providers.append(("Gemini", call_gemini_analyze))
+        # Ollama is always available as a last-resort local fallback
+        providers.append(("Ollama", call_ollama_analyze))
 
-    if raw is None:
+    print(f"\nStep 2: Sending files to AI in batches (providers: "
+          f"{', '.join(n for n, _ in providers)})...")
+
+    analysis = run_ai_batched(files, providers)
+
+    if analysis is None:
         print("\nAI Analyzer: All providers (Groq, Gemini, Ollama) unavailable — skipping AI analysis.")
         if local_fixed_files:
             print(f"  Pushing {len(local_fixed_files)} local auto-fix(es) to GitHub...")
@@ -1504,36 +1618,10 @@ def main():
             print("Lint and Test stages will catch any errors ✓")
         sys.exit(0)
 
-    print(f"\nStep 3: AI response:\n{raw}\n")
-
-    # Step 3: parse JSON — strip markdown fences and extract JSON block
-    def extract_json(text):
-        """Strip markdown fences, then extract the outermost {...} JSON object."""
-        import re
-
-        # Remove ```json ... ``` or ``` ... ``` fences
-        text = re.sub(r"```(?:json)?\s*", "", text)
-        text = text.replace("```", "").strip()
-        # Try direct parse first
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        # Try to extract first {...} block (handles narrative text before/after JSON)
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                pass
-        return None
-
-    analysis = extract_json(raw)
-    if analysis is None:
-        print(f"AI Analyzer: Could not parse AI response as JSON.")
-        print(f"Raw response was:\n{raw[:500]}{'...' if len(raw) > 500 else ''}")
-        print("Skipping — Lint and Test stages will catch any errors ✓")
-        sys.exit(0)
+    print(f"\nStep 3: Merged analysis across all batches:")
+    print(f"  Status : {analysis.get('status')}")
+    print(f"  Summary: {analysis.get('summary', '')}")
+    print(f"  Issues : {len(analysis.get('issues', []))}\n")
 
     with open(ANALYSIS_LOG, "w") as f:
         f.write(json.dumps(analysis, indent=2))
