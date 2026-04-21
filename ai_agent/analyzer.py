@@ -35,7 +35,7 @@ SKIP_FILES = {
     "lint_output.txt",
     "trivy-report.json",
 }
-ANALYZE_EXTS = {".py", ".html", ".htm", ".js", ".css", ".json"}
+ANALYZE_EXTS = {".py", ".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".css", ".json"}
 
 # Max chars sent to AI per chunk — keep below Gemini's context limit
 MAX_CHUNK_CHARS = 80000
@@ -162,11 +162,20 @@ WHAT TO FIND — errors in ANY language:
 
 Python  : missing colon (def/if/for/class), wrong indentation, unclosed bracket,
           undefined name used as function, invalid syntax
-HTML    : missing required tags (<html>, <head>, <body>, <style>, <script>),
+HTML/JSX: missing required tags (<html>, <head>, <body>, <style>, <script>),
           tag written as <lang="en"> instead of <html lang="en">,
-          unclosed tags, malformed tag names
+          unclosed tags, TYPO'D TAG NAMES — any tag that isn't a valid HTML5
+          element or React component is almost certainly a typo.
+          Examples you MUST flag and fix:
+            <riv>   → <div>        </riv>   → </div>
+            <spam>  → <span>       </spam>  → </span>
+            <dv>    → <div>        <diiv>   → <div>
+            <butto> → <button>     <h1>...</H1> → </h1> (case mismatch)
+          If both the opening and closing tag are typo'd the same way
+          (e.g. <riv>...</riv>), produce TWO replace issues — one per line.
 CSS     : unclosed braces {{ }}, missing semicolons on property values
-JavaScript: missing semicolons, unclosed brackets/braces, undefined variables
+JavaScript / JSX : missing semicolons, unclosed brackets/braces, undefined
+          variables, invalid JSX element names (same tag-typo rule as HTML)
 JSON    : trailing commas, unquoted keys, mismatched brackets
 
 WHAT NOT TO REPORT:
@@ -199,20 +208,24 @@ RULES FOR ALL ACTIONS:
 ════════════════════════════════════════
 ABSOLUTE RULES — NEVER BREAK THESE:
 
-  ❌ NEVER rename, replace, or invent HTML tag names.
-     <div>, <span>, <p>, <section> etc. must remain exactly as they are.
-     Do NOT change <div> to <jt>, <dv>, <iv>, <dt>, or ANY other tag.
-     Do NOT introduce ANY tag name that is not a standard HTML5 element.
-     If a closing tag is wrong (e.g. </jt>), the fix is </div> — restore
-     the ORIGINAL correct tag, never invent a new one.
+  ✅ DO fix typo'd tag names by replacing them with the intended VALID tag.
+     If you see <riv>, <dv>, <iv>, <dt>, <spam>, <butto> or any other tag
+     name that is NOT a standard HTML5 element or a valid React component,
+     treat it as a typo and REPLACE it with the closest valid tag
+     (<riv>/<dv>/<iv> → <div>, <spam> → <span>, <butto> → <button>, etc.).
 
-  ❌ NEVER remove or rename existing opening or closing HTML tags.
-     Only fix the SPECIFIC broken character (e.g. missing colon, bracket).
+  ❌ NEVER INVENT a tag name that is not in the HTML5 standard. The
+     fixed_line must ONLY ever contain standard HTML5 tags (<div>, <span>,
+     <p>, <section>, <a>, <button>, <form>, <input>, <img>, <ul>, <li>, …).
+     If you can't figure out what the user meant, leave the line alone.
+
+  ❌ NEVER rename a tag that IS already a valid HTML5 element. <div> stays
+     <div>. <span> stays <span>. Only touch tags that are clearly typos.
 
   ❌ NEVER fix what is not broken. If a line has no error, do not touch it.
 
-  ❌ NEVER produce a fixed_line that contains a made-up tag such as <jt>,
-     <dv>, <iv>, <dt>, <ht>, <bt>, or anything not in the HTML5 standard.
+  ❌ NEVER produce a fixed_line that itself contains a made-up tag such as
+     <jt>, <ht>, <bt>, <riv>, <spam>, or anything not in HTML5.
 
 ════════════════════════════════════════
 Return ONLY raw JSON — no markdown, no code fences.
