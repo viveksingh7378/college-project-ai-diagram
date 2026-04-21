@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ─────────────────────────────────────────────────────────────
 #  AI Diagram Agent — Merged fullstack deployment
 #  Services:
@@ -69,8 +67,10 @@ services:
   mongo:
     image: mongo:7
     container_name: college-ai-diagram-mongo
-    ports:
-      - "27017:27017"
+    # No host port mapping — the server talks to mongo via the internal
+    # "ai-net" bridge network at `mongo:27017`, so we don't need to expose
+    # mongo to the host. This avoids conflicts with locally-installed MongoDB.
+    # If you need GUI access, use:  docker exec -it college-ai-diagram-mongo mongosh
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
