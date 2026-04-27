@@ -37,6 +37,24 @@ SKIP_FILES = {
 }
 ANALYZE_EXTS = {".py", ".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".css", ".json"}
 
+# ── Cross-batch run state ─────────────────────────────────────────
+# When we send many batches, we don't want to re-enumerate every model on
+# every batch. Once a Groq model works, stick with it. Once a provider is
+# known dead (auth, rate-limit, Ollama not installed), skip it for the rest
+# of the run instead of re-discovering the failure on every batch.
+_RUN_STATE = {
+    "groq_model": None,       # model name that worked — try this first next time
+    "gemini_model": None,
+    "groq_dead": False,       # hard-disabled for this run (auth error, etc.)
+    "gemini_dead": False,
+    "ollama_dead": False,
+}
+# Hard wall-clock budget for the whole AI-analysis step. If we cross this
+# many seconds, bail out with whatever we have and let the pipeline move on.
+# Override with env AI_ANALYSIS_BUDGET_SECS.
+AI_ANALYSIS_BUDGET_SECS = int(os.environ.get("AI_ANALYSIS_BUDGET_SECS", "600"))  # 10 min
+_RUN_START_TIME = None  # set in main() when analysis begins
+
 # Max chars per SINGLE file chunk — must stay well under Groq's per-request
 # token budget once all other overhead (system prompt, schema, etc.) is added.
 # With the old 80 000 value, a full repo scan blew past Groq's max-request size
@@ -277,31 +295,45 @@ def call_groq_analyze(prompt):
     Returns the raw text response (a JSON string) on success, or None on
     complete failure so the caller can fall back to another provider.
     """
+    # Short-circuit: if we already discovered Groq is unusable this run,
+    # don't waste another batch on auth / rate-limit errors.
+    if _RUN_STATE["groq_dead"]:
+        print("  Groq already marked unavailable for this run — skipping")
+        return None
+
     try:
         from groq import Groq
     except ImportError:
         print("  groq SDK not installed (pip install groq) — skipping Groq")
+        _RUN_STATE["groq_dead"] = True
         return None
 
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         print("  GROQ_API_KEY not set — skipping Groq")
+        _RUN_STATE["groq_dead"] = True
         return None
 
     client = Groq(api_key=api_key)
 
     # Ordered by quality for code-analysis tasks. All currently live on Groq
-    # (as of late 2025) and support JSON mode. Removed models:
-    #   - llama-3.1-70b-versatile         → decommissioned, returns 404
-    #   - mixtral-8x7b-32768              → decommissioned, returns 404
-    #   - deepseek-r1-distill-llama-70b   → returns 404
-    models = [
+    # (as of late 2025) and support JSON mode.
+    DEFAULT_MODELS = [
         "llama-3.3-70b-versatile",   # best general-purpose, strong at code (128K ctx)
         "llama-3.1-8b-instant",      # fast small model, last resort (128K ctx)
         "llama3-70b-8192",           # stable older-gen fallback (8K ctx)
         "llama3-8b-8192",            # tiny stable fallback (8K ctx)
         "gemma2-9b-it",              # extra fallback
     ]
+
+    # If we already found a working model on a previous batch, try it first —
+    # avoids re-discovering 404s for the decommissioned models on every batch.
+    if _RUN_STATE["groq_model"]:
+        models = [_RUN_STATE["groq_model"]] + [
+            m for m in DEFAULT_MODELS if m != _RUN_STATE["groq_model"]
+        ]
+    else:
+        models = DEFAULT_MODELS
 
     # JSON mode requires the word "JSON" somewhere in the prompt — our
     # build_prompt() already includes it, but we belt-and-braces it here.
@@ -328,6 +360,7 @@ def call_groq_analyze(prompt):
                 text = (response.choices[0].message.content or "").strip()
                 if text:
                     print(f"  ✓ Got JSON response from Groq ({model_name})")
+                    _RUN_STATE["groq_model"] = model_name  # cache for next batch
                     return text
                 print(f"  {model_name} returned empty body — trying next model...")
                 break
@@ -350,9 +383,10 @@ def call_groq_analyze(prompt):
                         time.sleep(wait)
                         continue
                     break
-                # Auth / other hard error — stop trying Groq entirely
+                # Auth / other hard error — stop trying Groq entirely for this run
                 if "401" in err or "invalid_api_key" in err.lower() or "auth" in err.lower():
                     print(f"  Groq auth error: {e} — is GROQ_API_KEY correct?")
+                    _RUN_STATE["groq_dead"] = True
                     return None
                 print(f"  {model_name} unexpected error: {e} — skipping")
                 break
@@ -365,15 +399,27 @@ def call_groq_analyze(prompt):
 
 
 def call_gemini_analyze(prompt):
-    from google import genai
-    from google.genai import errors as genai_errors
+    # Short-circuit if Gemini is already known dead this run (rate-limit, etc.)
+    if _RUN_STATE["gemini_dead"]:
+        print("  Gemini already marked unavailable for this run — skipping")
+        return None
+
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("  GEMINI_API_KEY not set — skipping Gemini")
+        _RUN_STATE["gemini_dead"] = True
+        return None
+
+    try:
+        from google import genai
+        from google.genai import errors as genai_errors
+    except ImportError:
+        print("  google-genai SDK not installed — skipping Gemini")
+        _RUN_STATE["gemini_dead"] = True
+        return None
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-    # Ordered by capability; includes multiple fallbacks across model families.
-    # gemini-2.0-flash-exp removed — returns 404 (model retired).
-    # gemini-1.5-flash / gemini-1.5-pro added as stable low-quota fallbacks.
-    models = [
+    DEFAULT_MODELS = [
         "gemini-2.5-flash",
         "gemini-2.5-pro",
         "gemini-2.0-flash",
@@ -381,69 +427,61 @@ def call_gemini_analyze(prompt):
         "gemini-1.5-flash",
         "gemini-1.5-pro",
     ]
+    # Stick with whichever model worked on the previous batch.
+    if _RUN_STATE["gemini_model"]:
+        models = [_RUN_STATE["gemini_model"]] + [
+            m for m in DEFAULT_MODELS if m != _RUN_STATE["gemini_model"]
+        ]
+    else:
+        models = DEFAULT_MODELS
 
-    # Track how many models hit 503 vs 429 vs hard errors
-    all_503 = []
+    rate_limited_count = 0
 
     for model_name in models:
-        for attempt in range(3):
-            try:
-                print(f"  Trying {model_name} (attempt {attempt + 1})...")
-                response = client.models.generate_content(
-                    model=model_name, contents=prompt
-                )
-                print(f"  ✓ Got response from {model_name}")
-                return response.text.strip()
-
-            except genai_errors.ClientError as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    # Rate-limit on free tier — skip to next model immediately
-                    # (the quota resets per-minute, not per-second, so waiting
-                    #  doesn't help much; try a different model family instead)
-                    print(f"  {model_name} rate-limited (429) — trying next model...")
-                    break
-                elif "404" in err or "NOT_FOUND" in err:
-                    print(f"  {model_name} not found (404) — skipping...")
-                    break
-                else:
-                    print(f"  {model_name} client error: {e} — skipping")
-                    break
-
-            except genai_errors.ServerError as e:
-                # 503 server overload — retry same model with backoff
-                wait = 20 * (attempt + 1)
-                print(f"  {model_name} server error (attempt {attempt+1}/3): {e}")
-                if attempt < 2:
-                    print(f"  Retrying in {wait}s...")
-                    time.sleep(wait)
-                else:
-                    print(
-                        f"  {model_name} unavailable after 3 attempts — trying next model..."
-                    )
-                    all_503.append(model_name)
-
-            except Exception as e:
-                print(f"  {model_name} unexpected error: {e} — skipping")
-                break
-
-    # If EVERY model hit 503 (global Gemini outage), wait 2 min and retry once
-    if len(all_503) == len([m for m in models if m in all_503]):
-        print("\n  All models returned 503 — Gemini may be experiencing an outage.")
-        print("  Waiting 2 minutes before one final retry of gemini-2.5-flash...")
-        time.sleep(120)
+        # Single attempt per model — retries multiplied across many batches
+        # are what made Gemini's path take 10+ minutes per build.
         try:
+            print(f"  Trying {model_name}...")
             response = client.models.generate_content(
-                model="gemini-2.5-flash", contents=prompt
+                model=model_name, contents=prompt
             )
-            print("  ✓ Got response from gemini-2.5-flash (outage retry)")
+            print(f"  ✓ Got response from {model_name}")
+            _RUN_STATE["gemini_model"] = model_name  # cache for next batch
             return response.text.strip()
-        except Exception as e:
-            print(f"  Outage retry failed: {e}")
 
-    # ── All Gemini models failed — try Ollama as local fallback ──
-    print("\n  All Gemini models unavailable — trying Ollama local fallback...")
-    return call_ollama_analyze(prompt)
+        except genai_errors.ClientError as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                print(f"  {model_name} rate-limited (429) — trying next model...")
+                rate_limited_count += 1
+                continue
+            elif "404" in err or "NOT_FOUND" in err:
+                print(f"  {model_name} not found (404) — skipping...")
+                continue
+            else:
+                print(f"  {model_name} client error: {e} — skipping")
+                continue
+
+        except genai_errors.ServerError as e:
+            # 503 — try next model immediately. No 20s backoff, no 2-min sleep.
+            print(f"  {model_name} server error: {e} — trying next model...")
+            continue
+
+        except Exception as e:
+            print(f"  {model_name} unexpected error: {e} — skipping")
+            continue
+
+    # If EVERY Gemini model is rate-limited, the free-tier quota is exhausted
+    # for this minute. Mark Gemini dead for the rest of the run instead of
+    # banging on the API again on the next batch (would just waste seconds).
+    if rate_limited_count == len(models):
+        print("  All Gemini models rate-limited — disabling Gemini for the rest of this run.")
+        _RUN_STATE["gemini_dead"] = True
+
+    # NOTE: do NOT internally fall through to Ollama here. The outer batched
+    # loop handles provider fallback per batch, and the previous nested
+    # fallthrough caused Ollama to be called twice and added 2-min sleeps.
+    return None
 
 
 # ── Ollama local fallback ─────────────────────────────────────────
@@ -458,6 +496,13 @@ def call_ollama_analyze(prompt):
       ollama pull deepseek-coder   (great alternative)
       ollama pull llama3           (general purpose fallback)
     """
+    # Short-circuit: if Ollama is already known dead/slow this run, skip it.
+    # Without this, every batch would re-discover the same failure and add
+    # minutes of timeouts to the build.
+    if _RUN_STATE["ollama_dead"]:
+        print("  Ollama already marked unavailable for this run — skipping")
+        return None
+
     import urllib.request
     import urllib.error
 
@@ -476,21 +521,23 @@ def call_ollama_analyze(prompt):
     )
     ollama_prompt = json_instruction + prompt
 
-    # codellama on CPU can take 3-5 min for a large prompt — give it enough time.
-    # Other lighter models get a shorter timeout so we don't stall the pipeline.
+    # Tighter timeouts — batches are now ≤25 KB so CPU-only Ollama should
+    # answer in under 90 s. Keeping codellama's old 360 s × 2 attempts ×
+    # 6 batches turned every Jenkins build into a 30+ min wait.
     TIMEOUTS = {
-        "codellama": 360,  # 6 min — large model, CPU-only Jenkins
-        "deepseek-coder": 300,  # 5 min
-        "llama3": 300,
-        "mistral": 240,
-        "llama2": 300,
+        "codellama":      120,
+        "deepseek-coder": 120,
+        "llama3":         120,
+        "mistral":        90,
+        "llama2":         120,
     }
-    DEFAULT_TIMEOUT = 240
+    DEFAULT_TIMEOUT = 90
 
     for model_name in models:
         timeout = TIMEOUTS.get(model_name, DEFAULT_TIMEOUT)
-        # codellama gets 2 attempts because it sometimes needs a warm-up on first call
-        max_attempts = 2 if model_name == "codellama" else 1
+        # Single attempt per model — earlier code did 2 retries for codellama
+        # which doubled the worst-case wait per batch.
+        max_attempts = 1
 
         for attempt in range(max_attempts):
             try:
@@ -540,6 +587,7 @@ def call_ollama_analyze(prompt):
                     print(
                         "  To enable: install Ollama (https://ollama.com) then run: ollama serve"
                     )
+                    _RUN_STATE["ollama_dead"] = True  # don't retry on later batches
                     return None
                 if "404" in err_str or "Not Found" in err_str:
                     print(
@@ -1522,7 +1570,15 @@ def run_ai_batched(files_dict, providers):
     any_batch_succeeded = False
 
     for i, batch in enumerate(batches, 1):
-        batch_labels = ", ".join(batch.keys())
+        # Wall-clock guard — bail out gracefully if we're out of time.
+        if _RUN_START_TIME is not None:
+            elapsed = time.time() - _RUN_START_TIME
+            if elapsed > AI_ANALYSIS_BUDGET_SECS:
+                print(f"\n  ⏱  Wall-clock budget exhausted "
+                      f"({elapsed:.0f}s / {AI_ANALYSIS_BUDGET_SECS}s) — "
+                      f"stopping after batch {i-1}/{len(batches)}")
+                break
+
         batch_chars = sum(len(m["content"]) for m in batch.values())
         print(f"\n  ── Batch {i}/{len(batches)} "
               f"({len(batch)} file(s), {batch_chars} chars) ──")
@@ -1563,9 +1619,13 @@ def run_ai_batched(files_dict, providers):
 
 
 def main():
+    global _RUN_START_TIME
+    _RUN_START_TIME = time.time()
     print("=" * 60)
-    print("AI Code Analyzer — Powered by Google Gemini")
+    print("AI Code Analyzer — Powered by Groq → Gemini → Ollama")
     print(f"Project root: {PROJECT_ROOT}")
+    print(f"Wall-clock budget: {AI_ANALYSIS_BUDGET_SECS}s "
+          f"(override with AI_ANALYSIS_BUDGET_SECS env var)")
     print("=" * 60)
 
     # Step 0: fast local syntax checks — detects AND auto-fixes known issues
