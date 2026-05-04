@@ -212,11 +212,20 @@ HTML/JSX: missing required tags (<html>, <head>, <body>, <style>, <script>),
           tag written as <lang="en"> instead of <html lang="en">,
           unclosed tags, TYPO'D TAG NAMES — any tag that isn't a valid HTML5
           element or React component is almost certainly a typo.
-          Examples you MUST flag and fix:
+          Examples you MUST flag and fix (this list is NOT exhaustive — flag
+          ANY tag whose name isn't a valid HTML5 element):
             <riv>   → <div>        </riv>   → </div>
+            <dvi>   → <div>        </dvi>   → </div>
+            <dv>    → <div>        </dv>    → </div>
+            <diiv>  → <div>        </diiv>  → </div>
+            <ivd>   → <div>        </ivd>   → </div>
             <spam>  → <span>       </spam>  → </span>
-            <dv>    → <div>        <diiv>   → <div>
-            <butto> → <button>     <h1>...</H1> → </h1> (case mismatch)
+            <span>...</spam> → mismatched, fix the closing to </span>
+            <butto> → <button>     <buton>  → <button>
+            <h1>...</H1> → </h1>   (case mismatch — closing tag must match)
+          The rule: if a closing tag's name doesn't EXACTLY match the
+          nearest opening tag's name, ONE of them is a typo — fix the
+          typo'd one to match the valid HTML5 element.
           If both the opening and closing tag are typo'd the same way
           (e.g. <riv>...</riv>), produce TWO replace issues — one per line.
 CSS     : unclosed braces {{ }}, missing semicolons on property values
@@ -412,7 +421,12 @@ def call_groq_analyze(prompt):
                 print(f"  {model_name} unexpected error: {e} — skipping")
                 break
 
-    print("  All Groq models unavailable.")
+    # If we got here, every Groq model failed for THIS batch. On the free
+    # tier this almost always means the per-minute token quota is blown. No
+    # point re-enumerating all 5 models on the next batch — mark Groq dead
+    # for the rest of this run. The outer loop will fall straight to Gemini.
+    print("  All Groq models unavailable — disabling Groq for the rest of this run.")
+    _RUN_STATE["groq_dead"] = True
     return None
 
 

@@ -20,8 +20,8 @@ export default function Login() {
   };
 
   return (
-    <dvi className="min-h-screen flex items-center justify-center bg-gray-50">
-      <dvi className="w-full max-w-sm bg-white rounded-2xl shadow-md p-8">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-md p-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Welcome back</h1>
         <p className="text-sm text-gray-400 mb-6">Sign in to AI Diagram Agent</p>
 
