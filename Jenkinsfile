@@ -1,3 +1,30 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  Jenkins Pipeline — College AI Diagram Project
+//  ───────────────────────────────────────────────
+//
+//  REQUIRED JENKINS CREDENTIALS (Manage Jenkins → Credentials → System →
+//  Global → Add Credentials). The IDs MUST match exactly — they are case
+//  sensitive and referenced by name below.
+//
+//   ┌──────────────────────────┬────────────────────────┬───────────────────┐
+//   │  Credential ID           │  Kind                  │  Where to get it  │
+//   ├──────────────────────────┼────────────────────────┼───────────────────┤
+//   │  GROQ_API_KEY            │  Secret text           │ console.groq.com/keys │
+//   │  GEMINI_API_KEY          │  Secret text (optional)│ ai.google.dev     │
+//   │  GITHUB_TOKEN            │  Secret text           │ github.com/settings/tokens │
+//   │  dockerhub-credentials   │  Username + password   │ hub.docker.com (use access token, not password) │
+//   └──────────────────────────┴────────────────────────┴───────────────────┘
+//
+//  TO UPDATE THE GROQ KEY:
+//    Manage Jenkins → Credentials → (global) → click  GROQ_API_KEY
+//      → Update → paste new gsk_... key into Secret → Save
+//
+//  AI_AUTO_PUSH:
+//    Default = false. The AI analyzer detects + reports issues but does NOT
+//    commit/push fixes to GitHub. Flip to "true" only after you've watched
+//    a couple of clean dry-runs and trust the safety filters.
+// ─────────────────────────────────────────────────────────────────────────────
+
 pipeline {
     agent any
 
@@ -14,6 +41,15 @@ pipeline {
 
         // Node version used by both client and server
         NODE_VERSION = "20"
+
+        // ── AI analyzer behaviour ────────────────────────────────────────
+        // "false" → analyzer reports + applies fixes locally only (safe demo mode)
+        // "true"  → analyzer commits + pushes successful fixes back to GitHub
+        AI_AUTO_PUSH = "false"
+
+        // Hard wall-clock cap for the AI Code Analysis stage. The analyzer
+        // honours this and will stop gracefully after the budget elapses.
+        AI_ANALYSIS_BUDGET_SECS = "600"
     }
 
     options {
@@ -38,16 +74,24 @@ pipeline {
             }
         }
 
-        // ── 3. AI CODE ANALYSIS (optional — runs if GEMINI_API_KEY exists) ────
+        // ── 3. AI CODE ANALYSIS ───────────────────────────────────────────────
+        // Runs the multi-provider analyzer (Groq → Gemini → Ollama). It scans
+        // every source file, detects syntax errors, and applies fixes. With
+        // AI_AUTO_PUSH=true the bot will also commit + push the fixes.
         stage('AI Code Analysis') {
             when {
                 expression { return fileExists('ai_agent/analyzer.py') }
             }
             steps {
-                sh 'pip3 install -r requirements.txt --quiet --break-system-packages || pip3 install -r requirements.txt --quiet'
+                // pip's --break-system-packages flag was added in pip 23.0.
+                // On older systems it errors out, so we fall back gracefully.
+                sh '''
+                    pip3 install -r requirements.txt --quiet --break-system-packages \
+                      || pip3 install -r requirements.txt --quiet \
+                      || pip3 install --user -r requirements.txt --quiet
+                '''
+
                 script {
-                    // GROQ_API_KEY is the primary provider (native JSON mode → no syntax errors).
-                    // GEMINI_API_KEY is optional — used as a fallback if Groq is unreachable.
                     withCredentials([
                         string(credentialsId: 'GROQ_API_KEY',   variable: 'GROQ_API_KEY'),
                         string(credentialsId: 'GEMINI_API_KEY', variable: 'GEMINI_API_KEY'),
@@ -63,30 +107,35 @@ pipeline {
                                 GEMINI_API_KEY=$GEMINI_API_KEY \
                                 GITHUB_TOKEN=$GITHUB_TOKEN \
                                 AI_PROVIDER=${AI_PROVIDER:-} \
+                                AI_AUTO_PUSH=${AI_AUTO_PUSH} \
+                                AI_ANALYSIS_BUDGET_SECS=${AI_ANALYSIS_BUDGET_SECS} \
                                 python3 ai_agent/analyzer.py 2>&1 | tee analysis_output.txt || true
                             ''',
                             returnStatus: true
                         )
-                        echo "AI analyzer exit code: ${code}"
+                        echo "AI analyzer exit code: ${code}  (AI_AUTO_PUSH=${env.AI_AUTO_PUSH})"
                     }
                 }
             }
         }
 
         // ── 4. INSTALL DEPS (parallel) ────────────────────────────────────────
+        // `npm ci` is faster + deterministic but requires a valid lockfile.
+        // If the lockfile is missing/corrupt (e.g. an AI auto-fix went wrong),
+        // we fall back to `npm install` so the build doesn't fail outright.
         stage('Install Dependencies') {
             parallel {
                 stage('client deps') {
                     steps {
                         dir('client') {
-                            sh 'npm ci'
+                            sh 'npm ci || npm install'
                         }
                     }
                 }
                 stage('server deps') {
                     steps {
                         dir('server') {
-                            sh 'npm ci'
+                            sh 'npm ci || npm install'
                         }
                     }
                 }
@@ -154,7 +203,7 @@ pipeline {
             }
             steps {
                 script {
-                    if (fileExists('k8s/namespace.yaml')) {
+                    if (fileExists('k8s/namespace.yaml') && sh(script: 'command -v kubectl >/dev/null 2>&1 && kubectl cluster-info >/dev/null 2>&1', returnStatus: true) == 0) {
                         echo "Deploying to Kubernetes"
                         sh '''
                             kubectl apply -f k8s/namespace.yaml
@@ -163,7 +212,7 @@ pipeline {
                             kubectl -n ai-diagram rollout restart deployment/server || true
                         '''
                     } else {
-                        echo "Deploying via docker-compose"
+                        echo "Deploying via docker-compose (kubectl unreachable or no manifests)"
                         sh '''
                             docker compose pull || true
                             docker compose up -d --build
