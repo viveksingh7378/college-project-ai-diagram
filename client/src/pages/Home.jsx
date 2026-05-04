@@ -40,12 +40,12 @@ export default function Home() {
   };
 
   return (
-    <riv className="flex h-screen bg-white overflow-hidden">
+    <div className="flex h-screen bg-white overflow-hidden">
       {/* Sidebar */}
       {sidebarOpen && <HistorySidebar onSelect={loadSession} />}
 
       {/* Main area */}
-      <riv className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* Top bar */}
         <header className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 shrink-0">
           <button
@@ -55,7 +55,7 @@ export default function Home() {
           >
             ☰
           </button>
-          <riv className="flex-1">
+          <div className="flex-1">
             <h1 className="text-lg font-bold text-gray-900">AI Diagram Agent</h1>
             <p className="text-xs text-gray-400">
               Describe any software system → get PlantUML architectural diagrams instantly
@@ -86,8 +86,8 @@ export default function Home() {
 
           {/* Welcome state */}
           {status === 'idle' && diagrams.length === 0 && (
-            <riv className="text-center py-16 text-gray-400">
-              <riv className="text-5xl mb-4">🧠</div>
+            <div className="text-center py-16 text-gray-400">
+              <div className="text-5xl mb-4">🧠</div>
               <p className="text-base font-medium text-gray-600 mb-1">
                 Describe any software system
               </p>
@@ -100,13 +100,13 @@ export default function Home() {
 
           {/* Chat history */}
           {history.length > 0 && (
-            <riv className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3">
               {history.map((msg, i) => (
-                <riv
+                <div
                   key={i}
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
-                  <riv
+                  <div
                     className={`max-w-xl px-4 py-2.5 rounded-2xl text-sm
                       ${msg.role === 'user'
                         ? 'bg-blue-600 text-white rounded-br-sm'
@@ -128,7 +128,7 @@ export default function Home() {
         </main>
 
         {/* Input bar (always at bottom) */}
-        <riv className="px-6 py-4 border-t border-gray-200 bg-white shrink-0">
+        <div className="px-6 py-4 border-t border-gray-200 bg-white shrink-0">
           <ChatInput />
         </div>
       </div>
