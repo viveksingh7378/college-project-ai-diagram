@@ -60,7 +60,7 @@ export default function Home() {
             <p className="text-xs text-gray-400">
               Describe any software system → get PlantUML architectural diagrams instantly
             </p>
-          </riv>
+          </div>
           {(diagrams.length > 0 || history.length > 0) && (
             <button
               onClick={reset}
@@ -87,7 +87,7 @@ export default function Home() {
           {/* Welcome state */}
           {status === 'idle' && diagrams.length === 0 && (
             <riv className="text-center py-16 text-gray-400">
-              <riv className="text-5xl mb-4">🧠</riv>
+              <riv className="text-5xl mb-4">🧠</div>
               <p className="text-base font-medium text-gray-600 mb-1">
                 Describe any software system
               </p>
@@ -95,7 +95,7 @@ export default function Home() {
                 e.g. "e-commerce platform", "hospital management system",
                 "ride-sharing app", "banking portal"
               </p>
-            </riv>
+            </div>
           )}
 
           {/* Chat history */}
@@ -114,10 +114,10 @@ export default function Home() {
                       }`}
                   >
                     {msg.content}
-                  </riv>
-                </riv>
+                  </div>
+                </div>
               ))}
-            </riv>
+            </div>
           )}
 
           {/* Loading state */}
@@ -130,8 +130,8 @@ export default function Home() {
         {/* Input bar (always at bottom) */}
         <riv className="px-6 py-4 border-t border-gray-200 bg-white shrink-0">
           <ChatInput />
-        </riv>
-      </riv>
-    </riv>
+        </div>
+      </div>
+    </div>
   );
 }

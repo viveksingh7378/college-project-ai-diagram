@@ -770,26 +770,48 @@ def apply_fix(issue):
         lines = f.readlines()
 
     # ── REPLACE ──────────────────────────────────────────────────
+    # Strategy: prefer SUBSTRING replacement when the AI's `original_line`
+    # is shorter than the actual file line (e.g. fixing `<riv>` inside
+    # `<riv className="x">🧠</riv>`). The earlier whole-line replace lost
+    # everything else on the line and corrupted JSX with two typos per line.
+    def _do_replace_on_line(line, orig, fix):
+        """Return the fixed version of `line`, preserving its line ending."""
+        ending = "\n" if line.endswith("\n") else ""
+        bare = line.rstrip("\n").rstrip("\r")
+        orig_s = orig.strip()
+        fix_s = fix.strip()
+
+        if not orig_s or orig_s not in bare:
+            return None  # no match
+
+        # Case A: original IS the whole line (just maybe surrounded by
+        # whitespace) — do a full-line replace and preserve indentation.
+        if bare.strip() == orig_s:
+            indent = bare[: len(bare) - len(bare.lstrip())]
+            return indent + fix_s + ending
+
+        # Case B: original is a substring → replace ONLY that substring,
+        # keep everything else on the line intact. This is the case that
+        # was broken before: lines with two typos (e.g. <riv>x</riv>)
+        # had their tail (the emoji + closing tag) discarded by the old
+        # whole-line replace.
+        new_bare = bare.replace(orig_s, fix_s, 1)
+        return new_bare + ending
+
     if action == "replace":
         # Strategy 1: use line number hint
         if line_number and 1 <= line_number <= len(lines):
-            actual = lines[line_number - 1].rstrip("\n").rstrip("\r")
-            if original.strip() and (
-                original.strip() in actual or actual.strip() in original.strip()
-            ):
-                ending = "\n" if lines[line_number - 1].endswith("\n") else ""
-                lines[line_number - 1] = fixed + ending
+            new_line = _do_replace_on_line(lines[line_number - 1], original, fixed)
+            if new_line is not None:
+                lines[line_number - 1] = new_line
                 _write(full_path, lines)
                 print_fix_diff(issue, line_number)
                 return line_number
 
         # Strategy 2: search whole file
         for i, line in enumerate(lines):
-            if original.strip() in line:
-                ending = "\n" if line.endswith("\n") else ""
-                new_line = line.replace(line.rstrip("\n\r"), fixed, 1)
-                if not new_line.endswith("\n"):
-                    new_line += ending
+            new_line = _do_replace_on_line(line, original, fixed)
+            if new_line is not None:
                 lines[i] = new_line
                 _write(full_path, lines)
                 print_fix_diff(issue, i + 1)
