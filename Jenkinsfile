@@ -176,7 +176,15 @@ pipeline {
         // ── 7. DOCKER PUSH ────────────────────────────────────────────────────
         stage('Docker Push') {
             when {
-                branch 'main'
+                // Works for BOTH multibranch jobs (BRANCH_NAME is set) and
+                // "Pipeline script from SCM" jobs (BRANCH_NAME is null but
+                // GIT_BRANCH is "origin/main"). The previous `branch 'main'`
+                // gate only worked for multibranch and silently skipped the
+                // stage in single-branch jobs.
+                expression {
+                    def b = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
+                    return b == 'main' || b.endsWith('/main')
+                }
             }
             steps {
                 withCredentials([usernamePassword(
@@ -199,7 +207,15 @@ pipeline {
         // ── 8. DEPLOY (docker compose OR kubernetes) ──────────────────────────
         stage('Deploy') {
             when {
-                branch 'main'
+                // Works for BOTH multibranch jobs (BRANCH_NAME is set) and
+                // "Pipeline script from SCM" jobs (BRANCH_NAME is null but
+                // GIT_BRANCH is "origin/main"). The previous `branch 'main'`
+                // gate only worked for multibranch and silently skipped the
+                // stage in single-branch jobs.
+                expression {
+                    def b = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
+                    return b == 'main' || b.endsWith('/main')
+                }
             }
             steps {
                 script {

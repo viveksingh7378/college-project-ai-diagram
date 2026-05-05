@@ -1274,12 +1274,102 @@ def _auto_fix_html_structure(full_path, rel_path, errors):
         return False
 
 
+def _detect_and_fix_tag_typos(full_path, rel_path):
+    """
+    Deterministic JSX/HTML tag-typo detector.
+
+    Scans the file for opening (<name ...>) and closing (</name>) tags whose
+    `name` is NOT a valid HTML5 element AND is NOT a React component
+    (capitalised, e.g. <DiagramCard>). Picks the closest valid HTML5 tag by
+    edit distance and rewrites the file in place.
+
+    This runs BEFORE the AI analysis so deterministic typos like
+    <butto>, <dvi>, <riv>, <spam>, <buton> are fixed even if the AI is
+    rate-limited or misses them.
+
+    Returns a list of fix dicts: [{file, line, before, after}].
+    """
+    import re as _re
+    from difflib import get_close_matches
+
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return []
+
+    # Find every tag — opening or closing — whose name is all-lowercase.
+    # We skip:
+    #   - React components: capitalised first letter (<DiagramCard ...>)
+    #   - Tags in JSX expressions / strings — accept some false positives;
+    #     the post-fix validator catches anything that breaks compile.
+    # Pattern: < or </ , followed by [a-z][a-z0-9]*
+    tag_re = _re.compile(r"</?([a-z][a-z0-9]*)\b")
+
+    fixes = []
+    seen = set()  # don't re-suggest the same typo on every line
+
+    for match in tag_re.finditer(content):
+        name = match.group(1)
+        if name in _VALID_HTML_TAGS:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+
+        # Find a plausible HTML5 element this might be a typo of
+        candidates = get_close_matches(name, _VALID_HTML_TAGS, n=1, cutoff=0.7)
+        if not candidates:
+            continue
+        suggested = candidates[0]
+        fixes.append({"name": name, "suggested": suggested})
+
+    if not fixes:
+        return []
+
+    # Apply every fix: replace `<typo` with `<suggested` and `</typo>` with `</suggested>`.
+    new_content = content
+    applied = []
+    for fix in fixes:
+        typo = fix["name"]
+        good = fix["suggested"]
+        # Match boundary so `<butto` matches but `<button` doesn't
+        open_re = _re.compile(r"<" + _re.escape(typo) + r"\b")
+        close_re = _re.compile(r"</" + _re.escape(typo) + r"\b")
+        before_count_open = len(open_re.findall(new_content))
+        before_count_close = len(close_re.findall(new_content))
+        new_content = open_re.sub(f"<{good}", new_content)
+        new_content = close_re.sub(f"</{good}", new_content)
+        if before_count_open or before_count_close:
+            applied.append({
+                "file": rel_path,
+                "before": typo,
+                "after": good,
+                "open_count": before_count_open,
+                "close_count": before_count_close,
+            })
+
+    if new_content != content:
+        try:
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+        except OSError as e:
+            print(f"  ⚠ Could not write tag-typo fix to {rel_path}: {e}")
+            return []
+
+    for f in applied:
+        print(f"  🔧 Tag typo fixed in {f['file']}: "
+              f"<{f['before']}>×{f['open_count']} </{f['before']}>×{f['close_count']} → "
+              f"<{f['after']}>")
+    return applied
+
+
 def local_syntax_check():
     """
     Run fast local syntax checkers BEFORE calling the AI.
     Detects AND auto-fixes well-known structural errors (HTML skeleton tags,
-    CSS brace imbalance context) so simple errors are resolved even when
-    AI models are unavailable or hallucinating.
+    CSS brace imbalance context, JSX/HTML tag typos) so simple errors are
+    resolved even when AI models are unavailable or hallucinating.
 
     Returns: (findings, auto_fixed_files)
       findings        — list of dicts [{file, tool, error}] for all issues found
@@ -1290,6 +1380,34 @@ def local_syntax_check():
     findings = []
     auto_fixed_files = set()
     print("\nPre-flight: Local syntax checks...")
+
+    # ── Pass 0: tag-typo auto-fix on JSX/HTML files ────────────────
+    # Catches <butto>, <dvi>, <riv>, <spam>, <buton>, etc. via
+    # difflib.get_close_matches against the HTML5 tag set. Runs first so
+    # subsequent passes (and the AI) see clean tag names.
+    for dirpath, dirnames, filenames in os.walk(PROJECT_ROOT):
+        dirnames[:] = [
+            d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
+        ]
+        for filename in filenames:
+            if filename in SKIP_FILES:
+                continue
+            if any(filename.endswith(p) for p in SKIP_FILE_PATTERNS):
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in (".jsx", ".tsx", ".html", ".htm"):
+                continue
+            full_path = os.path.join(dirpath, filename)
+            rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+            tag_fixes = _detect_and_fix_tag_typos(full_path, rel_path)
+            if tag_fixes:
+                auto_fixed_files.add(rel_path)
+                for tf in tag_fixes:
+                    findings.append({
+                        "file": rel_path,
+                        "tool": "tag-typo-fixer",
+                        "error": f"<{tf['before']}> → <{tf['after']}>",
+                    })
 
     for dirpath, dirnames, filenames in os.walk(PROJECT_ROOT):
         dirnames[:] = [
