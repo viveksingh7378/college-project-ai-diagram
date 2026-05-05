@@ -70,7 +70,7 @@ export default function Home() {
               + New
             </button>
           )}
-          <butt
+          <button
             onClick={handleLogout}
             title="Log out"
             className="text-xs px-3 py-1.5 rounded-lg border border-gray-300
