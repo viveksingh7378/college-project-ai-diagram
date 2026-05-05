@@ -78,7 +78,7 @@ export default function Home() {
                        text-gray-600 transition-colors"
           >
             Logout
-          </but>
+          </butt>
         </header>
 
         {/* Content */}

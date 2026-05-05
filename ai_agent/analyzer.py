@@ -1317,11 +1317,24 @@ def _detect_and_fix_tag_typos(full_path, rel_path):
             continue
         seen.add(name)
 
-        # Find a plausible HTML5 element this might be a typo of
-        candidates = get_close_matches(name, _VALID_HTML_TAGS, n=1, cutoff=0.7)
+        # Find a plausible HTML5 element this might be a typo of.
+        # cutoff 0.6 catches 3-char truncations like `but → button` (ratio
+        # 0.667). At 0.7 we missed those and the file ended up with mixed
+        # <button>...</but> pairs.
+        candidates = get_close_matches(name, _VALID_HTML_TAGS, n=3, cutoff=0.6)
         if not candidates:
             continue
         suggested = candidates[0]
+
+        # Bias: if any of the candidate valid tags is ALREADY used as an
+        # opening tag in this file, prefer that one (handles closing-tag
+        # typos like </but> when <button> opens elsewhere in the file).
+        for c in candidates:
+            opens = len(_re.findall(r"<" + _re.escape(c) + r"\b", content))
+            if opens > 0:
+                suggested = c
+                break
+
         fixes.append({"name": name, "suggested": suggested})
 
     if not fixes:
