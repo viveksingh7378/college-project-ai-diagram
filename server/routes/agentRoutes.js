@@ -1,6 +1,6 @@
 import express from 'express';
 import { analyzePrompt, refineDiagrams } from '../controllers/agentController.js';
-import { protect } from '../middleware/authMiddleware.js';
+import { protect, login } from '../controllers/authController.js';
 
 const router = express.Router();
 
