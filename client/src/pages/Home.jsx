@@ -70,7 +70,7 @@ export default function Home() {
               + New
             </button>
           )}
-          <button
+          <butto
             onClick={handleLogout}
             title="Log out"
             className="text-xs px-3 py-1.5 rounded-lg border border-gray-300
@@ -78,7 +78,7 @@ export default function Home() {
                        text-gray-600 transition-colors"
           >
             Logout
-          </button>
+          </butto>
         </header>
 
         {/* Content */}

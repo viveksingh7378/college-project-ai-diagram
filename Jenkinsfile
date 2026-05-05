@@ -45,7 +45,7 @@ pipeline {
         // ── AI analyzer behaviour ────────────────────────────────────────
         // "false" → analyzer reports + applies fixes locally only (safe demo mode)
         // "true"  → analyzer commits + pushes successful fixes back to GitHub
-        AI_AUTO_PUSH = "false"
+        AI_AUTO_PUSH = "true"
 
         // Hard wall-clock cap for the AI Code Analysis stage. The analyzer
         // honours this and will stop gracefully after the budget elapses.
