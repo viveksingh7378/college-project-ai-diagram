@@ -1,4 +1,4 @@
-export const clarificationPrompt = () => ` `
+export const clarificationPrompt = () => `
 You are a software architect assistant. You will be given a user's system description
 and an initial analysis. Decide if you need ONE clarifying question to make better diagrams.
 
