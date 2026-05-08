@@ -87,7 +87,7 @@ export default function Home() {
           {/* Welcome state */}
           {status === 'idle' && diagrams.length === 0 && (
             <div className="text-center py-16 text-gray-400">
-              <div className="text-5xl mb-4">🧠</div>
+              <div className="text-5xl mb-4"> <i class="fa-solid fa-brain"></i> or <i class="fa-solid fa-lightbulb"></i></div>
               <p className="text-base font-medium text-gray-600 mb-1">
                 Describe any software system
               </p>

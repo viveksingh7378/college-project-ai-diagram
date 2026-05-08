@@ -55,6 +55,24 @@ ANALYZE_EXTS = {".py", ".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".css", ".
 # maps, etc. — also auto-generated and never worth fixing).
 SKIP_FILE_PATTERNS = ("min.js", "min.css", ".map", "bundle.js")
 
+# ── Analysis scope ────────────────────────────────────────────────
+# Comma-separated list of directories (relative to project root) the analyzer
+# is ALLOWED to scan. Anything outside this list is invisible to both the
+# local pre-flight checker AND the AI.
+#
+# Default: "client" — analyze ONLY the frontend. Past AI hallucinations
+# corrupted backend files (agentRoutes.js, agentController.js,
+# package-lock.json, ai_agent/analyzer.py model lists) so we keep the AI
+# away from working backend code by default.
+#
+# Override with env var:  AI_ANALYZE_SCOPE=client,server   (multiple dirs)
+#                         AI_ANALYZE_SCOPE=.               (whole project)
+ANALYZE_SCOPE = [
+    s.strip().rstrip("/") for s in
+    os.environ.get("AI_ANALYZE_SCOPE", "client").split(",")
+    if s.strip()
+]
+
 # ── Cross-batch run state ─────────────────────────────────────────
 # When we send many batches, we don't want to re-enumerate every model on
 # every batch. Once a Groq model works, stick with it. Once a provider is
@@ -129,55 +147,79 @@ def split_into_chunks(content, rel_path):
     return chunks
 
 
+def _is_in_scope(rel_path):
+    """Return True if rel_path falls under one of the ANALYZE_SCOPE roots."""
+    if "." in ANALYZE_SCOPE:
+        return True  # whole project
+    norm = rel_path.replace("\\", "/")
+    for root in ANALYZE_SCOPE:
+        if norm == root or norm.startswith(root + "/"):
+            return True
+    return False
+
+
 def collect_files():
     """
-    Collect all source files. Large files are split into chunks so the AI
-    sees every line — no more silent truncation in the middle of a file.
+    Collect source files within the configured ANALYZE_SCOPE only. Anything
+    outside (server/, ai_agent/, root-level files) is ignored — the AI never
+    sees it and can't propose fixes for it.
+
     Returns dict: label → {"rel_path": ..., "line_start": ..., "content": ...}
     """
     file_map = {}
 
-    for dirpath, dirnames, filenames in os.walk(PROJECT_ROOT):
-        dirnames[:] = [
-            d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
-        ]
-        for filename in filenames:
-            if filename in SKIP_FILES:
-                continue
-            # Skip minified bundles, source maps, etc.
-            if any(filename.endswith(pat) for pat in SKIP_FILE_PATTERNS):
-                continue
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in ANALYZE_EXTS:
-                continue
-            full_path = os.path.join(dirpath, filename)
-            rel_path = os.path.relpath(full_path, PROJECT_ROOT)
-            try:
-                with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
+    # Walk only inside the scoped directories instead of the whole project.
+    scope_roots = [
+        os.path.join(PROJECT_ROOT, s) if s != "." else PROJECT_ROOT
+        for s in ANALYZE_SCOPE
+    ]
+    print(f"  Scope: {ANALYZE_SCOPE}  (set AI_ANALYZE_SCOPE=. to scan whole project)")
 
-                if len(content) <= MAX_CHUNK_CHARS:
-                    # Small file — send as-is
-                    file_map[rel_path] = {
-                        "rel_path": rel_path,
-                        "line_start": 1,
-                        "content": content,
-                    }
-                else:
-                    # Large file — split into chunks (NO truncation)
-                    chunks = split_into_chunks(content, rel_path)
-                    print(
-                        f"  ⚡ Large file split into {len(chunks)} chunk(s): {rel_path}"
-                    )
-                    for label, rp, line_start, chunk_content in chunks:
-                        file_map[label] = {
-                            "rel_path": rp,
-                            "line_start": line_start,
-                            "content": chunk_content,
+    for scope_root in scope_roots:
+        if not os.path.isdir(scope_root):
+            print(f"  ⚠ Scope dir not found, skipping: {scope_root}")
+            continue
+        for dirpath, dirnames, filenames in os.walk(scope_root):
+            dirnames[:] = [
+                d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
+            ]
+            for filename in filenames:
+                if filename in SKIP_FILES:
+                    continue
+                # Skip minified bundles, source maps, etc.
+                if any(filename.endswith(pat) for pat in SKIP_FILE_PATTERNS):
+                    continue
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in ANALYZE_EXTS:
+                    continue
+                full_path = os.path.join(dirpath, filename)
+                rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+                try:
+                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+
+                    if len(content) <= MAX_CHUNK_CHARS:
+                        # Small file — send as-is
+                        file_map[rel_path] = {
+                            "rel_path": rel_path,
+                            "line_start": 1,
+                            "content": content,
                         }
+                    else:
+                        # Large file — split into chunks (NO truncation)
+                        chunks = split_into_chunks(content, rel_path)
+                        print(
+                            f"  ⚡ Large file split into {len(chunks)} chunk(s): {rel_path}"
+                        )
+                        for label, rp, line_start, chunk_content in chunks:
+                            file_map[label] = {
+                                "rel_path": rp,
+                                "line_start": line_start,
+                                "content": chunk_content,
+                            }
 
-            except Exception as e:
-                print(f"  Warning: could not read {rel_path} — {e}")
+                except Exception as e:
+                    print(f"  Warning: could not read {rel_path} — {e}")
 
     return file_map
 
@@ -1420,7 +1462,9 @@ def local_syntax_check():
     # ── Pass 0: tag-typo auto-fix on JSX/HTML files ────────────────
     # Catches <butto>, <dvi>, <riv>, <spam>, <buton>, etc. via
     # difflib.get_close_matches against the HTML5 tag set. Runs first so
-    # subsequent passes (and the AI) see clean tag names.
+    # subsequent passes (and the AI) see clean tag names. Scoped to the
+    # configured ANALYZE_SCOPE so we never touch backend or auto-generated code.
+    print(f"  Pre-flight scope: {ANALYZE_SCOPE}")
     for dirpath, dirnames, filenames in os.walk(PROJECT_ROOT):
         dirnames[:] = [
             d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
@@ -1435,6 +1479,11 @@ def local_syntax_check():
                 continue
             full_path = os.path.join(dirpath, filename)
             rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+            # Respect the scope — skip files outside (e.g. server/ when
+            # AI_ANALYZE_SCOPE=client). Prevents the local fixer from
+            # writing into backend code that's known-good.
+            if not _is_in_scope(rel_path):
+                continue
             tag_fixes = _detect_and_fix_tag_typos(full_path, rel_path)
             if tag_fixes:
                 auto_fixed_files.add(rel_path)
@@ -1453,6 +1502,11 @@ def local_syntax_check():
             ext = os.path.splitext(filename)[1].lower()
             full_path = os.path.join(dirpath, filename)
             rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+
+            # Skip anything outside the configured scope — keeps the
+            # checker from inspecting backend or auto-generated files.
+            if not _is_in_scope(rel_path):
+                continue
 
             # ── Python: use py_compile ──────────────────────────
             if ext == ".py":
