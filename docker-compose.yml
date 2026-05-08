@@ -23,7 +23,10 @@ services:
     image: vivek7378/college-ai-diagram-client:latest
     container_name: college-ai-diagram-client
     ports:
-      - "80:80"
+      # Host port 8081 → container port 80.
+      # Avoids host port 80 (often busy on macOS) and 8080 (used by Jenkins).
+      # The app is reachable at http://localhost:8081
+      - "8081:80"
     depends_on:
       - server
     restart: unless-stopped
@@ -49,7 +52,12 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       PLANTUML_SERVER: ${PLANTUML_SERVER:-https://www.plantuml.com/plantuml/png}
     ports:
-      - "5000:5000"
+      # Host port 5050 → container port 5000.
+      # macOS AirPlay Receiver grabs host port 5000 by default; using 5050
+      # on the host avoids the "address already in use" conflict.
+      # The client/nginx still talks to the server INSIDE the docker network
+      # at `server:5000`, so this only affects direct host access.
+      - "5050:5000"
     depends_on:
       mongo:
         condition: service_healthy
