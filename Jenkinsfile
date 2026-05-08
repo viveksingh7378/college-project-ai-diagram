@@ -174,32 +174,52 @@ pipeline {
         }
 
         // ── 7. DOCKER PUSH ────────────────────────────────────────────────────
+        // Login is done ONCE manually on the host machine
+        // (`docker login -u vivek7378` with an access token from
+        // hub.docker.com/settings/security). Credentials are then cached in
+        // ~/.docker/config.json and reused on every build — no more
+        // login/logout cycle per build. We only re-run docker login if
+        // ~/.docker/config.json doesn't have a saved auth (first-time setup
+        // on a fresh Jenkins installation).
         stage('Docker Push') {
             when {
-                // Works for BOTH multibranch jobs (BRANCH_NAME is set) and
-                // "Pipeline script from SCM" jobs (BRANCH_NAME is null but
-                // GIT_BRANCH is "origin/main"). The previous `branch 'main'`
-                // gate only worked for multibranch and silently skipped the
-                // stage in single-branch jobs.
                 expression {
                     def b = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
                     return b == 'main' || b.endsWith('/main')
                 }
             }
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-credentials',
-                    usernameVariable: 'DOCKER_USERNAME',
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    sh '''
-                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+                script {
+                    // Check if we're already logged in to DockerHub.
+                    // `docker info` reports `Username: ...` when authenticated
+                    // (works on Mac/Keychain, Linux, Windows — any backend).
+                    def loggedIn = sh(
+                        script: 'docker info 2>/dev/null | grep -q "^ Username:"',
+                        returnStatus: true
+                    ) == 0
+
+                    if (!loggedIn) {
+                        echo "No cached DockerHub credentials — logging in (one-time)..."
+                        withCredentials([usernamePassword(
+                            credentialsId: 'dockerhub-credentials',
+                            usernameVariable: 'DOCKER_USERNAME',
+                            passwordVariable: 'DOCKER_PASSWORD'
+                        )]) {
+                            sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin'
+                        }
+                    } else {
+                        echo "✓ Using cached DockerHub credentials"
+                    }
+
+                    sh """
                         docker push ${IMG_CLIENT}:${GIT_COMMIT_SHORT}
                         docker push ${IMG_CLIENT}:latest
                         docker push ${IMG_SERVER}:${GIT_COMMIT_SHORT}
                         docker push ${IMG_SERVER}:latest
-                        docker logout
-                    '''
+                    """
+                    // NOTE: no `docker logout` — we want creds to persist for
+                    // the next build. To force a re-login, run:
+                    //   docker logout    (on the Jenkins host)
                 }
             }
         }
