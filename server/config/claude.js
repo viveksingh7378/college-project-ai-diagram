@@ -1,6 +1,14 @@
 import Groq from 'groq-sdk';
 import dotenv from 'dotenv';
-dotenv.config();
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Load .env from the SERVER directory first, then fall back to the project
+// root one level up. This lets you run `npm run dev` from the server folder
+// while keeping a single shared .env at the project root for docker-compose.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 
 if (!process.env.GROQ_API_KEY) {
   console.error('❌  GROQ_API_KEY is not set in .env');

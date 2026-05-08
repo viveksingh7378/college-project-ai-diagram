@@ -728,6 +728,29 @@ def is_safe_fix(issue):
         print(f"  ⛔ Skipping bare-brace insertion at {loc} — too risky")
         return False
 
+    # ── Import-path hallucination guard ─────────────────────────────
+    # When the AI "fixes" an `import ... from 'A'` to import from a
+    # different module 'B', it's almost always hallucinating. The classic
+    # case: changing `import { protect } from '../middleware/authMiddleware.js'`
+    # to `import { protect, login } from '../controllers/authController.js'`.
+    # The file compiles but crashes at startup because the symbol doesn't
+    # exist in the new module. We reject any replace that swaps the source
+    # path of an import statement.
+    if action == "replace":
+        import re as _re_imp
+        # Match: import ... from 'path' OR import ... from "path"
+        imp_re = _re_imp.compile(r"""\bfrom\s+['"]([^'"]+)['"]""")
+        before_match = imp_re.search(orig)
+        after_match  = imp_re.search(fixed)
+        if before_match and after_match:
+            before_path = before_match.group(1)
+            after_path  = after_match.group(1)
+            if before_path != after_path:
+                print(f"  ⛔ Skipping import-path swap at {loc}")
+                print(f"     Refused to redirect import from {before_path!r} to {after_path!r}")
+                print(f"     (this is a common AI hallucination — the symbol may not exist in the new module)")
+                return False
+
     # anchor/original must not be empty
     if not orig.strip():
         print(f"  ⚠ Skipping — empty original_line/anchor for {loc}")
