@@ -12,7 +12,7 @@ const sessionSchema = new mongoose.Schema(
     title: { type: String, default: 'New Session' }, // Auto-set from first prompt
     messages: [messageSchema],
     diagrams: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Diagram' }],
-    systemContext: {},
+    systemContext: {
       // Stores the analyzed system info for refine requests
       systemName: String,
       actors: [String],

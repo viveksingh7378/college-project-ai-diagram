@@ -14,7 +14,7 @@ export const analyzePrompt = async (req, res, next) => {
     if (!prompt) return res.status(400).json({ message: 'Prompt is required' });
 
     // ── Run the agent ──────────────────────────────────────────────────────────
-    const result = await runAgentPipeline(prompt).catch((err) => { console.error(err); });
+    const result = await runAgentPipeline(prompt);
 
     // ── Needs clarification ────────────────────────────────────────────────────
     if (result.status === 'needs_clarification') {
