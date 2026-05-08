@@ -770,6 +770,19 @@ def is_safe_fix(issue):
         print(f"  ⛔ Skipping bare-brace insertion at {loc} — too risky")
         return False
 
+    # ── Wrap-around / duplicated-content guard ──────────────────────
+    # If a replace fix's `original_line` is fully a substring of `fixed_line`,
+    # the AI is "wrapping" instead of "fixing". With our substring-replace
+    # apply logic this duplicates content. Real-world breakage:
+    #   original: import.meta.env.VITE_API_URL || '...'
+    #   fixed:    const BASE = import.meta.env.VITE_API_URL || '...'
+    # Result on disk: `const BASE = const BASE = import...` → vite syntax error.
+    if action == "replace":
+        if orig.strip() and orig.strip() in fixed.strip() and orig.strip() != fixed.strip():
+            print(f"  ⛔ Skipping wrap-around replace at {loc}")
+            print(f"     original_line is fully contained in fixed_line — would duplicate content")
+            return False
+
     # ── Import-path hallucination guard ─────────────────────────────
     # When the AI "fixes" an `import ... from 'A'` to import from a
     # different module 'B', it's almost always hallucinating. The classic

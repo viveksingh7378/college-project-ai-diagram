@@ -86,8 +86,7 @@ export default function Home() {
 
           {/* Welcome state */}
           {status === 'idle' && diagrams.length === 0 && (
-            <riv className="text-center py-16 text-gray-400">
-              <div className="text-5xl mb-4"> <i class="fa-solid fa-brain"></i> or <i class="fa-solid fa-lightbulb"></i></div>
+            <div className="text-center py-16 text-gray-400">
               <p className="text-base font-medium text-gray-600 mb-1">
                 Describe any software system
               </p>
@@ -95,7 +94,7 @@ export default function Home() {
                 e.g. "e-commerce platform", "hospital management system",
                 "ride-sharing app", "banking portal"
               </p>
-            </riv>
+            </div>
           )}
 
           {/* Chat history */}
