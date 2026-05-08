@@ -40,7 +40,7 @@ const fixCommonMistakes = (code, type) => {
   fixed = fixed.replace(/@startuml([^\n])/g, '@startuml\n$1');
   fixed = fixed.replace(/([^\n])@enduml/g, '$1\n@enduml');
 
-  return fixed.trim();
+  return fixed;
 };
 
 /**

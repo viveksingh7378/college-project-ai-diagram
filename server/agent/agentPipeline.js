@@ -137,7 +137,7 @@ export const runRefinePipeline = async (refinement, systemContext) => {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /** Merge two string arrays, preserving order and removing duplicates (case-insensitive). */
-function mergeUnique(a = [], b = []) {
+const mergeUnique = (a = [], b = []) => {
   const seen = new Set();
   const out = [];
   for (const x of [...(a || []), ...(b || [])]) {
@@ -148,5 +148,5 @@ function mergeUnique(a = [], b = []) {
       out.push(String(x).trim());
     }
   }
-  return out;
+  return [...new Set(out)];
 }

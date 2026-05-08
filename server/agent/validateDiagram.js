@@ -35,5 +35,5 @@ export const validateDiagram = async (code, type, retries = 0) => {
     2000
   );
   const cleanFixed = fixed.replace(/```plantuml/gi, '').replace(/```/g, '').trim();
-  return validateDiagram(cleanFixed, type, retries + 1);
+  return await validateDiagram(cleanFixed, type, retries + 1);
 };

@@ -4,7 +4,7 @@ import Session from '../models/Session.js';
 // GET /api/diagrams  — all diagrams for current user
 export const getDiagrams = async (req, res, next) => {
   try {
-    const diagrams = await Diagram.find({ userId: req.user._id }).sort({ createdAt: -1 });
+    const diagrams = await Diagram.find({ userId: req.user._id }).sort({ createdAt: -1 }).catch((err) => { console.error(err); });
     res.json(diagrams);
   } catch (err) { next(err); }
 };
